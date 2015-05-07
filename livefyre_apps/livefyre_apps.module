@@ -1,0 +1,505 @@
+<?php
+module_load_include('inc', 'livefyre_apps', 'includes/constants');
+
+// Field
+/**
+ * Implements hook_field_info()
+ */
+function livefyre_apps_field_info() {
+	return array(
+		'livefyre_apps' => array(
+			'label' => t('Livefyre App'),
+			'description' => t('Creates a field that allows you to add Livefyre apps to content types.'),
+			'default_widget' => 'core_widget',
+			'default_formatter' => 'core_formatter'
+		)
+	);
+}
+
+/**
+ * Implements hook_field_instance_settings_form()
+ */
+function livefyre_apps_field_instance_settings_form($field, $instance) {
+	$settings = $instance['settings'];
+	$form['element_target_id'] = array(
+		'#type' => 'textfield',
+		'#title' => t('Target Element ID'),
+		'#description' => t("The HTML element id that the widget targets to render in the template. Please note it must be unique per template file and that everything but Sidenotes needs it."),
+		'#default_value' => !empty($settings['element_target_id']) ? $settings['element_target_id'] : ''
+	);
+
+	return $form;
+}
+
+/**
+ * Implements hook_field_is_empty()
+ */
+function livefyre_apps_field_is_empty($item, $field) {
+	return empty($item['livefyre_apps']);
+}
+
+/**
+ * Implements hook_field_presave()
+ * 
+ * Since we package the data in an fieldset, we need to pluck the values back
+ * out and set them at the top in order to make sure it can get saved by the
+ * Field API.
+ */
+function livefyre_apps_field_presave($entity_type, $entity, $field, $instance,
+	$langcode, &$items) {
+	// Custom hook to allow other modules to alter the data before it's saved.
+	foreach (module_implements('field_presave_shim') as $module) {
+		$fn = $module . '_field_presave_shim';
+		$fn($entity_type, $entity, $field, $instance, $langcode, $items);
+	}
+
+	foreach($items as $delta => $item) {
+		if (!empty($item[$field['type']])) {
+			foreach($item[$field['type']] as $k => $v) {
+				if (isset($entity->nid) && $k == 'livefyre_article_id' && empty($v)) {
+					$items[$delta][$k] = livefyre_apps_generate_livefyre_article_id($entity_type, $entity->nid, $items[$delta]['type']);
+				}
+				else {
+					$items[$delta][$k] = $v;
+				}
+			}
+			unset($items[$delta]['livefyre_apps']);
+		}
+	}
+}
+
+/**
+ * Implments hook_field_insert()
+ * 
+ * We need this because I need to auto-generate an article id base upon the
+ * node id.. however, the node id isn't known yet in the presave state on
+ * initial creation, so we have this.
+ */
+function livefyre_apps_field_insert($entity_type, $entity, $field, $instance,
+	$langcode, &$items) {
+	foreach($items as $delta => $item) {
+		foreach($item as $k => $v) {
+			if ($k == 'livefyre_article_id' && empty($v)) {
+				$items[$delta][$k] = livefyre_apps_generate_livefyre_article_id($entity_type, $entity->nid, $items[$delta]['type']);
+			}
+		}
+	}
+}
+
+/**
+ * Core function to construct the livefyre_article_ids for an app
+ * 
+ * @param string $entity_type What type of entity we're attached to (usually just node)
+ * @param int $node_id the Drupal node id
+ * @param string $type A string denoting the type of collection this article id is for. Choices right now are sidenotes and comments
+ * @return string
+ */
+function livefyre_apps_generate_livefyre_article_id($entity_type, $node_id, $app_type) {
+    $type = '';
+    switch ($app_type) {
+        case LivefyreAppType::COMMENTS:
+            $type = 'comments';
+            break;
+        case LivefyreAppType::SIDENOTES:
+            $type = 'sidenotes';
+            break;
+        case LivefyreAppType::MEDIA_WALL:
+            $type = 'mediawall';
+            break;
+        case LivefyreAppType::LIST_FEED:
+            $type = 'listfeed';
+            break;
+    }
+    
+    return implode('-', array($entity_type, $node_id, $type));
+}
+
+/**
+ * Implements hook_field_validate()
+ */
+function livefyre_apps_field_validate($entity_type, $entity, $field, $instance,
+	$langcode, $items, &$errors) {
+	// Custom hook to allow other modules to add additional errors
+	foreach (module_implements('field_validate_shim') as $module) {
+		$fn = $module . '_field_validate_shim';
+		$fn($entity_type, $entity, $field, $instance, $langcode, $items, $errors);
+	}
+
+	foreach($items as $delta => $item) {
+		if (!empty($item[$field['type']])) {
+			foreach ($item[$field['type']] as $k => $v) {
+				if ($k == 'json_config') {
+					if (!empty($v) && is_null(json_decode($v))) {
+						$errors[$field['field_name']][$langcode][$delta][] = array (
+							'error' => 'livefyre_apps_invalid_json',
+							'message' => t('%name: Configuration Options needs to be valid JSON or empty', array(
+								'%name' => $instance['label']
+							))
+						);
+					}
+				}
+			}
+		}
+	}		
+}
+
+//Widget
+/**
+ * Implements hook_field_widget_info()
+ */
+function livefyre_apps_field_widget_info() {
+	return array(
+		'core_widget' => array(
+			'label' => t('Core Widget'),
+			'field types' => array('livefyre_apps')
+		),
+		'sdk_widget' => array(
+			'label' => t('SDK Widget'),
+			'field types' => array('livefyre_apps')
+		)
+	);
+}
+
+/**
+ * Implements hook_field_widget_form()
+ */
+function livefyre_apps_field_widget_form(&$form, &$form_state, $field, $instance,
+	$langcode, $items, $delta, $element) {
+	$element = array();
+	$item = isset($items[$delta]) ? $items[$delta] : array();
+	
+	// Common widget options
+	// Fieldset for prettiness
+	$widget = array(
+		'#type' => 'fieldset',
+		'#title' => t('Livefyre Apps')
+	);
+	
+	// Enabled?
+	$widget['enabled'] = array(
+		'#type' => 'checkbox',
+		'#title' => t('Module Enabled'),
+		'#default_value' => isset($item['enabled']) ? $item['enabled'] : 1
+	);
+	
+	// Title
+	$widget['title'] = array(
+		'#type' => 'textfield',
+		'#title' => t('Title'),
+		'#description' => t('The title that gets displayed with the block.'),
+		'#default_value' => !empty($item['title']) ? $item['title'] : '',
+		'#maxlength' => LIVEFYRE_APPS_MAX_TITLE_LENGTH,
+		'#states' => array(
+			'enabled' => array(
+				'input[name*="' . $instance['field_name'] . '"][name*="enabled"][type="checkbox"]' => array('checked' => TRUE)
+			)
+		)
+	);
+	
+	// App types
+	$type_opts = array();
+	$default_type_opt = '';
+	switch ($instance['widget']['type']) {
+		case 'core_widget':
+			$type_opts = array(
+				LivefyreAppType::COMMENTS => 'Comments',
+				LivefyreAppType::SIDENOTES => 'Sidenotes'
+			);
+			$widget['#title'] .= ' - Core';
+			$default_type_opt = LivefyreAppType::COMMENTS;
+			break;
+		case 'sdk_widget':
+			$type_opts = array(
+				LivefyreAppType::LIST_FEED => 'List Feed',
+				LivefyreAppType::MEDIA_WALL => 'Media Wall'
+			);
+			$widget['#title'] .= ' - SDK';
+			$default_type_opt = LivefyreAppType::LIST_FEED;
+			break;
+	}
+	$widget['type'] = array(
+		'#type' => 'radios',
+		'#title' => t('Livefyre App Type'),
+		'#options' => $type_opts,
+		'#default_value' => isset($item['type']) ? $item['type'] : $default_type_opt,
+		'#states' => array(
+			'enabled' => array(
+				'input[name*="' . $instance['field_name'] . '"][name*="enabled"][type="checkbox"]' => array('checked' => TRUE)
+			)
+		)
+	);
+	
+	// LF Article ID
+	$widget['livefyre_article_id'] = array(
+		'#type' => 'textfield',
+		'#title' => t('Livefyre Article ID'),
+		'#description' => t('This is the unique article id that Livefyre will associate a collection with.'),
+		'#default_value' => !empty($item['livefyre_article_id']) ? $item['livefyre_article_id'] : '',
+		'#maxlength' => LF_MAX_ARTICLE_ID_LENGTH,
+		'#states' => array(
+			'enabled' => array(
+				'input[name*="' . $instance['field_name'] . '"][name*="enabled"][type="checkbox"]' => array('checked' => TRUE)
+			)
+		)
+	);
+	// If you're a core widget, lock this down cuz.. it's probably better you don't change it. Plus,
+	// you only really need to reference it.. not change it at this point.
+	if ($instance['widget']['type'] === 'core_widget') {
+	    $widget['livefyre_article_id']['#disabled'] = TRUE;
+	    $widget['livefyre_article_id']['#states'] = array();
+	}
+	
+	// Config
+	$widget['json_config'] = array(
+		'#type' => 'textarea',
+		'#title' => t('Configuration Options'),
+		'#description' => t('Additional configuration options to pass to the widget (e.g. display replies, number of initial items to display, etc.). NOTE: This must be valid JSON'),
+		'#default_value' => isset($item['json_config']) ? $item['json_config'] : ''
+	);
+	
+	$element['livefyre_apps'] = $widget;
+	return $element;
+}
+
+/**
+ * Implements hook_field_widget_error()
+ */
+function livefyre_apps_field_widget_error($element, $error, $form, &$form_state) {
+	switch ($error['error']) {
+		case 'livefyre_apps_invalid_json':
+			// Ghetto hack in order to highlight the specific form element instead of the entire field
+			$element['#parents'] = $element['livefyre_apps']['json_config']['#parents'];
+			form_error($element, $error['message']);
+			break;
+	}
+}
+
+// Formatter
+/**
+ * Implements hook_field_formatter_info()
+ */
+function livefyre_apps_field_formatter_info() {
+	return array(
+		'core_formatter' => array(
+			'label' => t('Core Formatter'),
+			'field types' => array('livefyre_apps')
+		),
+		'sdk_formatter' => array(
+			'label' => t('SDK Formatter'),
+			'field types' => array('livefyre_apps')
+		)
+	);
+}
+
+/**
+ * Implements hook_field_formatter_view()
+ */
+function livefyre_apps_field_formatter_view($entity_type, $entity, $field, $instance,
+	$langcode, $items, $display) {
+	// Add me some JS for all Livefyre apps
+	drupal_add_js('//cdn.livefyre.com/Livefyre.js', 'external');
+	
+	$element = array();
+	$lf_api = LivefyreCoreApi::getInstance();
+	$site = $lf_api->getUtilInstance()->getSite($lf_api->getSiteId(), $lf_api->getSiteKey());
+
+	// Build common config options
+	$common_config = array(
+	    '#el' => isset($instance['settings']['element_target_id']) ? $instance['settings']['element_target_id'] : '',
+		'#network' => $lf_api->getNetwork(),
+		'#site_id' => $lf_api->getSiteId()
+	);
+
+	if ($lf_api->getEnvironment() == LivefyreEnvironment::STAGING) {
+		$common_config['#environment'] = ENV_STAGING;
+	}
+	
+	if ($lf_api->isLfepEnabled()) {
+		$lfep_uris = $lf_api->generateLfepUris();
+		drupal_add_js($lfep_uris['js_uri'], 'external');
+		$common_config['#auth_delegates']['lfep_app_name'] = $lfep_uris['app_name'];
+	}
+	else {
+		$common_config['#auth_delegates']['lfep_app_name'] = NULL;
+		$common_config['#auth_delegates']['custom'] = $lf_api->getAuthDelegates();
+	}
+	
+	// Formatter specific stuff
+	switch ($display['type']) {
+		case 'core_formatter':
+			global $base_root;
+			
+			// Config for all core apps, but that don't change per instance
+			$title = $entity->title;
+			
+			// Build the canonical url
+			$url = $base_root . '/';
+			$alias = drupal_get_path_alias('node/' . $entity->nid);
+			
+			// Make urls pretty? Well.. we'll need pathauto for that...
+			if (module_exists('pathauto') && strpos($alias, 'node/' . $entity->nid) !== FALSE) {
+			    // This module load feels dirty.. but pathauto does it..
+			    module_load_include('inc', 'pathauto');
+			    $alias = pathauto_create_alias('node', 'return', $alias, array('node' => $entity), $entity->type);
+			}
+			$url .= $alias;
+		
+			$core_config = array(
+				'#theme' => 'core_theme'
+			);
+
+			foreach ($items as $delta => $item) {
+				// Handle Preview
+				if (isset($item['livefyre_apps'])) {
+					$item = array_pop($item);
+				}
+				
+				// Normal View
+				if ($item['enabled']) {
+					$article_id = $item['livefyre_article_id'];
+					$tags = implode(',', _livefyre_apps_get_node_tags($entity));
+					
+					// Add the node tag so we can filter by them if need be
+					$tags .= (!empty($tags) ? ',' : '') . 'node';
+					
+					// Instance level config
+					$instance_config = array(
+						'#title' => $item['title'],
+						'#article_id' => $article_id,
+						'#checksum' => $site->buildChecksum($title, $url, $tags),
+						'#collection_meta' => $site->buildCollectionMetaToken($title, $article_id, $url, array('tags' => $tags)),
+						'#json_config' => $item['json_config']
+					);				
+					
+					// TODO: parameterize the app version (e.g. [app_type]#[version])
+					if ($item['type'] == LivefyreAppType::SIDENOTES) {
+						$instance_config['#selectors'] = '.region.region-content p';
+						$instance_config['#app'] = 'sidenotes#1.2.7';
+					}
+					else {
+						/*
+						 * For each type of app, we can add the appopriate require and
+						 * variable name here.
+						 */
+						if ($item['type'] == LivefyreAppType::COMMENTS) {
+							$instance_config['#app'] = 'fyre.conv#3.0.0';
+						} 
+					}
+					
+					// and put it all together...
+					$element[$delta] = array_merge($common_config, $core_config, $instance_config);
+				}
+			}
+			break;
+		case 'sdk_formatter':
+			// Config for all SDK apps, but that don't change per instance
+			$sdk_config = array(
+				'#theme' => 'sdk_theme',
+			);
+			
+			foreach ($items as $delta => $item) {
+				// Handle Preview
+				if (isset($item['livefyre_apps'])) {
+					$item = array_pop($item);
+				}
+				
+				// Normal View
+				if ($item['enabled']) {
+					$article_id = $item['livefyre_article_id'];
+					
+					// Instance level config
+					$instance_config = array(
+						'#title' => $item['title'],
+						'#article_id' => $article_id,
+						'#json_config' => $item['json_config']
+					);
+	
+					if ($item['type'] == LivefyreAppType::LIST_FEED) {
+						$instance_config['#app'] = 'streamhub-feed#3.0.1';
+					}
+					elseif ($item['type'] == LivefyreAppType::MEDIA_WALL) {
+						$instance_config['#app'] = 'streamhub-wall#3.3.2';
+					}
+				}
+				
+				// and put it all together...
+				$element[$delta] = array_merge($common_config, $sdk_config, $instance_config);
+			}
+			break;
+	}
+
+	return $element;
+}
+
+/**
+ * Implements hook_theme()
+ */
+function livefyre_apps_theme() {
+	// Common vars between both templates
+	$common_vars = array(
+		'title' => NULL,
+		'network' => NULL,
+		'site_id' => NULL,
+		'article_id' => NULL,
+		'el' => NULL,
+		'environment' => NULL,
+		'app' => NULL,
+		'json_config' => NULL,
+		'auth_delegates' => NULL
+	);
+	
+	// Vars only utilized in the core template
+	$core_vars = array(
+		'collection_meta' => NULL,
+		'checksum' => NULL,
+		'selectors' => NULL
+	);
+	
+	// Vars only uitilized by the sdk template
+	// I know, it's empty - this is for future stuff
+	$sdk_vars = array();
+	 
+	return array(
+		'core_theme' => array(
+			'template' => 'templates/core-app',
+			'variables' => array_merge($common_vars, $core_vars)
+		),
+		'sdk_theme' => array(
+			'template' => 'templates/sdk-app',
+			'variables' => array_merge($common_vars, $sdk_vars)
+		)
+	);
+}
+
+/*
+ * Private Methods
+ */
+
+/**
+ *
+ * @param unknown $entity
+ * @return multitype:
+ */
+function _livefyre_apps_get_node_tags($entity) {
+	$primary_tags = _livefyre_apps_pluck_tag_names($entity->field_tags[$entity->language]);
+	$supporting_tags = _livefyre_apps_pluck_tag_names($entity->field_supporting_tags[$entity->language]);
+
+	return array_merge($primary_tags, $supporting_tags);
+}
+
+/**
+ * Given a drupal [node] entity, find the taxonomy terms' name and return the list.
+ *
+ * @param array $tag_list Array of taxonomy term objects
+ * @return array
+ */
+function _livefyre_apps_pluck_tag_names($tag_list) {
+	$tag_names = array();
+	foreach ($tag_list as $tag_obj) {
+		if (isset($tag_obj['taxonomy_term'])) {
+			array_push($tag_names, $tag_obj['taxonomy_term']->name);
+		}
+	}
+
+	return $tag_names;
+}

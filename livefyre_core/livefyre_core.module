@@ -1,0 +1,19 @@
+<?php
+/**
+ * @file
+ * The core Livefyre module that should deal primarily with setup, configuration, and
+ * the nitty-gritty details of working with Livefyre's APIs. All other Livefyre modules
+ * should use this as a core module to perform the necessary Livefyre-y functions.
+ */
+module_load_include('inc', 'livefyre_core', 'includes/livefyre_core_admin');
+
+/**
+ * Implements the hook_help()
+ */
+function livefyre_core_help($path, $arg) {
+	switch ($path) {
+		case "admin/help#livefyre_core":
+			return "<p>Provides the facilities to configure Livefyre in order for any Livefyre-y tasks to work.</p>";
+			break;
+	}
+}

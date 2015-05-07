@@ -1,0 +1,12 @@
+name = Livefyre Core
+description = Core library for all Livefyre methods and configuration.
+core = 7.x
+package = Livefyre
+
+configure = admin/config/livefyre/livefyre_core
+version = 7.x-0.0
+
+files[] = includes/enum_environment.inc
+files[] = includes/enum_content_source.inc
+files[] = includes/enum_content_visibility.inc
+files[] = includes/livefyre_core_api.inc

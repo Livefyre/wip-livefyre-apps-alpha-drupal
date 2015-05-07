@@ -1,0 +1,11 @@
+name = Livefyre Apps
+description = A module to add on Livefyre applications as fields.
+core = 7.x
+package = Livefyre
+
+version = 7.x-0.0
+
+files[] = includes/enum_app_types.inc
+
+dependencies[] = field
+dependencies[] = livefyre_core

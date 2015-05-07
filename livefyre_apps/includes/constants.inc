@@ -1,0 +1,2 @@
+<?php
+define('LIVEFYRE_APPS_MAX_TITLE_LENGTH', 100);
